@@ -1,0 +1,102 @@
+# Patch an .exe file to have the GUI subsystem
+# Based on https://gist.github.com/jeremyd2019/a3a4bfd94359c5851b9c8b105560a1bd
+
+directive c_include "windows.h"
+directive c_include "stddef.h"
+directive apply_nativedefine
+
+
+import libs.c
+import libs.io
+import libs.os
+import libs.console
+
+GUI_SUBSYSTEM: Const[u16] = 2u16
+DOS_HEADER_SIZE: Const[c.Size] = ccode """sizeof(IMAGE_DOS_HEADER)"""
+IMAGE_DOS_SIGNATURE: Const[u16] = ccode """IMAGE_DOS_SIGNATURE"""
+IMAGE_NT_SIGNATURE: Const[u32] = ccode """IMAGE_NT_SIGNATURE"""
+NT_MAGIC_OFFSET: Const[i64] = ccode """offsetof(IMAGE_NT_HEADERS, OptionalHeader.Magic)"""
+NT_SUBSYSTEM32_OFFSET: Const[i64] = ccode """offsetof(IMAGE_NT_HEADERS32, OptionalHeader.Subsystem)"""
+NT_SUBSYSTEM64_OFFSET: Const[i64] = ccode """offsetof(IMAGE_NT_HEADERS64, OptionalHeader.Subsystem)"""
+IMAGE_NT_OPTIONAL_HDR64_MAGIC: Const[u16] = ccode """IMAGE_NT_OPTIONAL_HDR64_MAGIC"""
+IMAGE_NT_OPTIONAL_HDR32_MAGIC: Const[u16] = ccode """IMAGE_NT_OPTIONAL_HDR32_MAGIC"""
+
+@nativedefine("IMAGE_DOS_HEADER")
+struct DosHeader:
+    e_magic: u16
+    e_lfanew: u32
+
+
+def main() -> int:
+    args: os.Arguments = os.get_args()
+    if args.argc != 2:
+        console.red("Usage: gui_patch <exe>")
+        println("")
+        return 2
+    exe = args.argv[1]
+    fh: Ptr[io.File] = io.fopen(exe, "r+b")
+    if fh == None:
+        console.red("Failed to open file: ")
+        println(exe)
+        return 2
+    defer io.fclose(fh)
+    idh: DosHeader
+    if io.fread(cast("AnyPtr", getref(idh)), DOS_HEADER_SIZE, cast("c.Size", 1), fh) != cast("c.Size", 1):
+        console.red("Failed to read DOS header")
+        println("")
+        return 2
+    if idh.e_magic != IMAGE_DOS_SIGNATURE:
+        console.red("Invalid DOS header")
+        println("")
+        return 2
+    if not io.fseek_begin(fh, cast("i64", idh.e_lfanew)):
+        console.red("Failed to seek to NT header")
+        println("")
+        return 2
+    nt_signature: u32
+    if io.fread(cast("AnyPtr", getref(nt_signature)), cast("c.Size", 4), cast("c.Size", 1), fh) != cast("c.Size", 1):
+        console.red("Failed to read NT signature")
+        println("")
+        return 2
+    if nt_signature != IMAGE_NT_SIGNATURE:
+        console.red("Invalid NT signature")
+        println("")
+        return 2
+    if not io.fseek_begin(fh, cast("i64", idh.e_lfanew) + NT_MAGIC_OFFSET):
+        console.red("Failed to seek to NT magic")
+        println("")
+        return 2
+    nt_magic: u16
+    if io.fread(cast("AnyPtr", getref(nt_magic)), cast("c.Size", 2), cast("c.Size", 1), fh) != cast("c.Size", 1):
+        console.red("Failed to read NT magic")
+        println("")
+        return 2
+    if nt_magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC and nt_magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC:
+        console.red("Invalid NT magic")
+        println("")
+        return 2
+    subsystem_offset: i64 = cast("i64", idh.e_lfanew) + iif(nt_magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC, NT_SUBSYSTEM32_OFFSET, NT_SUBSYSTEM64_OFFSET)
+    if not io.fseek_begin(fh, subsystem_offset):
+        console.red("Failed to seek to subsystem")
+        println("")
+        return 2
+    subsystem: u16
+    if io.fread(cast("AnyPtr", getref(subsystem)), cast("c.Size", 2), cast("c.Size", 1), fh) != cast("c.Size", 1):
+        console.red("Failed to read subsystem")
+        println("")
+        return 2
+    if subsystem == GUI_SUBSYSTEM:
+        console.green("Already patched. Nothing to do.")
+        println("")
+        return 0
+    if not io.fseek_begin(fh, subsystem_offset):
+        console.red("Failed to seek to subsystem")
+        println("")
+        return 2
+    if io.fwrite(cast("AnyPtr", getref(GUI_SUBSYSTEM)), cast("c.Size", 2), cast("c.Size", 1), fh) != cast("c.Size", 1):
+        console.red("Failed to write subsystem")
+        println("")
+        return 2
+    console.green("Patched: ")
+    println(exe)
+    return 0
